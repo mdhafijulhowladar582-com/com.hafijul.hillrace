@@ -13,6 +13,7 @@ func _ready() -> void:
 		"maps": preload("res://maps_screen.gd"),
 		"garage": preload("res://garage.gd"),
 		"settings": preload("res://settings.gd"),
+		"ach": preload("res://achievements.gd"),
 		"game": preload("res://gameplay.gd"),
 	}
 	var fl := CanvasLayer.new()

@@ -22,6 +22,9 @@ var wmats: Array[PhysicsMaterial] = []
 var dust: Array = []
 var exhaust: CPUParticles2D
 var wr := 30.0
+var on_ground := false
+var head_local := Vector2.ZERO
+var body_vis
 var air_torque := 40000.0
 
 func make_particles(col: Color, amount: int, life: float, vmin: float, vmax: float, smin: float, smax: float, dir: Vector2, spread: float, grav: Vector2) -> CPUParticles2D:
@@ -84,12 +87,14 @@ func _ready() -> void:
 	var body := CarBody.new()
 	body.setup(cdata)
 	chassis.add_child(body)
+	body_vis = body
 
 	# ---- head sensor ----
 	var head := Area2D.new()
 	head.collision_layer = 0
 	head.collision_mask = 1
 	head.position = Vector2(body.hx, body.top - 7.0)
+	head_local = head.position
 	var hs := CollisionShape2D.new()
 	var hc := CircleShape2D.new()
 	hc.radius = 10.0
@@ -183,7 +188,10 @@ func apply_tuning() -> void:
 	for w in wheels:
 		w.gravity_scale = grav
 
-func _process(_d: float) -> void:
+func _process(d: float) -> void:
+	# গাড়ি ঝুঁকে চলার অ্যানিমেশন (গ্যাসে নাক উপরে, ব্রেকে নিচে)
+	var lean: float = -0.07 if gas else (0.06 if brake else 0.0)
+	body_vis.rotation = lerpf(body_vis.rotation, lean, clampf(d * 6.0, 0.0, 1.0))
 	var spd: float = chassis.linear_velocity.length()
 	for i in range(wheels.size()):
 		var p: CPUParticles2D = dust[i]
@@ -192,7 +200,7 @@ func _process(_d: float) -> void:
 	exhaust.emitting = gas
 
 func _physics_process(_delta: float) -> void:
-	var on_ground := false
+	on_ground = false
 	for w in wheels:
 		if w.get_contact_count() > 0:
 			on_ground = true

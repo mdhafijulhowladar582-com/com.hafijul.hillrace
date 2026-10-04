@@ -35,6 +35,7 @@ func _draw() -> void:
 			var cx: float = fposmod(float(i) * 330.0 + time * 10.0 - cam_x * 0.06, sz.x + 400.0) - 200.0
 			var cy: float = sz.y * (0.1 + 0.07 * float(i % 3))
 			var cc := Color(1, 1, 1, 0.75)
+			draw_circle(Vector2(cx + 4.0, cy + 12.0), 26.0, Color(0.78, 0.85, 0.95, 0.5))
 			draw_circle(Vector2(cx, cy), 28.0, cc)
 			draw_circle(Vector2(cx + 30.0, cy + 6.0), 22.0, cc)
 			draw_circle(Vector2(cx - 30.0, cy + 8.0), 20.0, cc)

@@ -23,10 +23,18 @@ var sound_on := true
 var music_on := true
 var debug_on := false
 var tune := {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0}
+var achievements: Array = []
+var ach: Array = []
+var pending_ach: Array = []
+var stats := {"runs": 0, "coins_picked": 0, "flips": 0, "best_air": 0.0, "best_dist": 0.0}
+var last_daily := ""
+var streak := 0
+var tutorial_done := false
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	build_data()
+	build_achievements()
 	reset_state()
 	load_game()
 
@@ -101,6 +109,14 @@ func reset_state() -> void:
 		best.append(0.0)
 		stars.append(0)
 	tune = {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0}
+	ach = []
+	for i in range(achievements.size()):
+		ach.append(false)
+	pending_ach = []
+	stats = {"runs": 0, "coins_picked": 0, "flips": 0, "best_air": 0.0, "best_dist": 0.0}
+	last_daily = ""
+	streak = 0
+	tutorial_done = false
 
 func load_game() -> void:
 	if not FileAccess.file_exists(SAVE_PATH):
@@ -145,6 +161,18 @@ func load_game() -> void:
 		for k in tune.keys():
 			if t.has(k):
 				tune[k] = clampf(float(t[k]), 0.5, 1.8)
+	var aa = parsed.get("ach")
+	if aa is Array and aa.size() == ach.size():
+		for i in range(ach.size()):
+			ach[i] = bool(aa[i])
+	var st = parsed.get("stats")
+	if st is Dictionary:
+		for k in stats.keys():
+			if st.has(k):
+				stats[k] = float(st[k])
+	last_daily = str(parsed.get("last_daily", ""))
+	streak = int(parsed.get("streak", 0))
+	tutorial_done = bool(parsed.get("tutorial", false))
 	if not cars_unlocked[sel_car]:
 		sel_car = 0
 	if not maps_unlocked[sel_map]:
@@ -155,7 +183,8 @@ func save_game() -> void:
 		"coins": coins, "sel_car": sel_car, "sel_map": sel_map,
 		"sound": sound_on, "music": music_on, "debug": debug_on,
 		"cars_unlocked": cars_unlocked, "maps_unlocked": maps_unlocked,
-		"best": best, "stars": stars, "upgrades": upgrades, "tune": tune
+		"best": best, "stars": stars, "upgrades": upgrades, "tune": tune,
+		"ach": ach, "stats": stats, "last_daily": last_daily, "streak": streak, "tutorial": tutorial_done
 	}
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
@@ -175,6 +204,7 @@ func buy_car(i: int) -> bool:
 		return false
 	coins -= price
 	cars_unlocked[i] = true
+	check_achievements()
 	save_game()
 	coins_changed.emit()
 	return true
@@ -187,6 +217,7 @@ func buy_map(i: int) -> bool:
 		return false
 	coins -= price
 	maps_unlocked[i] = true
+	check_achievements()
 	save_game()
 	coins_changed.emit()
 	return true
@@ -230,10 +261,10 @@ func effective(i: int) -> Dictionary:
 
 # distance goals (meters) for 1, 2, 3 stars
 func map_targets(i: int) -> Array:
-	var s: float = 1.0 + float(i) * 0.25
-	return [int(300.0 * s), int(700.0 * s), int(1200.0 * s)]
+	var s: float = 1.0 + float(i) * 0.15
+	return [int(250.0 * s), int(550.0 * s), int(900.0 * s)]
 
-func submit_run(map_i: int, dist: float, pickups: int) -> Dictionary:
+func submit_run(map_i: int, dist: float, pickups: int, flips: int, air_best: float, bonus_pts: int) -> Dictionary:
 	var targets: Array = map_targets(map_i)
 	var got := 0
 	for k in range(3):
@@ -250,14 +281,110 @@ func submit_run(map_i: int, dist: float, pickups: int) -> Dictionary:
 	var newbest: bool = dist > float(best[map_i]) and dist > 1.0
 	if newbest:
 		best[map_i] = dist
-	var total: int = pickup_coins + dist_coins + bonus
+	var total: int = pickup_coins + dist_coins + bonus + bonus_pts
 	coins += total
+	stats["runs"] = int(stats["runs"]) + 1
+	stats["coins_picked"] = int(stats["coins_picked"]) + pickups
+	stats["flips"] = int(stats["flips"]) + flips
+	stats["best_air"] = maxf(float(stats["best_air"]), air_best)
+	stats["best_dist"] = maxf(float(stats["best_dist"]), dist)
+	check_achievements()
+	var names: Array = pending_ach.duplicate()
+	pending_ach.clear()
 	save_game()
 	coins_changed.emit()
-	return {"stars": got, "pickup_coins": pickup_coins, "dist_coins": dist_coins, "bonus": bonus, "total": total, "newbest": newbest}
+	return {"stars": got, "pickup_coins": pickup_coins, "dist_coins": dist_coins, "bonus": bonus, "bonus_pts": bonus_pts, "total": total, "newbest": newbest, "ach": names, "flips": flips}
 
 func total_stars() -> int:
 	var n := 0
 	for s in stars:
 		n += int(s)
 	return n
+
+# ---------------- achievements ----------------
+func make_ach(n: String, desc: String, kind: String, target: float, reward: int) -> Dictionary:
+	return {"name": n, "desc": desc, "kind": kind, "target": target, "reward": reward}
+
+func build_achievements() -> void:
+	achievements.clear()
+	achievements.append(make_ach("First Drive", "Finish your first run", "runs", 1, 50))
+	achievements.append(make_ach("Rookie", "Reach 300 m in one run", "dist", 300, 100))
+	achievements.append(make_ach("Explorer", "Reach 1000 m in one run", "dist", 1000, 300))
+	achievements.append(make_ach("Legend", "Reach 2500 m in one run", "dist", 2500, 1000))
+	achievements.append(make_ach("Coin Collector", "Collect 100 coins", "coins", 100, 150))
+	achievements.append(make_ach("Treasure Hunter", "Collect 1000 coins", "coins", 1000, 500))
+	achievements.append(make_ach("Flipper", "Do 10 flips", "flips", 10, 200))
+	achievements.append(make_ach("Daredevil", "Stay 3 seconds in the air", "air", 3, 200))
+	achievements.append(make_ach("Star Hunter", "Earn 10 stars", "stars", 10, 400))
+	achievements.append(make_ach("Collector", "Own 3 cars", "cars", 3, 300))
+	achievements.append(make_ach("Traveler", "Unlock 3 maps", "maps", 3, 300))
+	achievements.append(make_ach("Marathon", "Play 50 runs", "runs", 50, 500))
+
+func count_true(a: Array) -> int:
+	var n := 0
+	for v in a:
+		if v:
+			n += 1
+	return n
+
+func ach_value(kind: String) -> float:
+	if kind == "runs":
+		return float(stats["runs"])
+	if kind == "dist":
+		return float(stats["best_dist"])
+	if kind == "coins":
+		return float(stats["coins_picked"])
+	if kind == "flips":
+		return float(stats["flips"])
+	if kind == "air":
+		return float(stats["best_air"])
+	if kind == "stars":
+		return float(total_stars())
+	if kind == "cars":
+		return float(count_true(cars_unlocked))
+	if kind == "maps":
+		return float(count_true(maps_unlocked))
+	return 0.0
+
+func check_achievements() -> Array:
+	var newly: Array = []
+	for i in range(achievements.size()):
+		if ach[i]:
+			continue
+		var a: Dictionary = achievements[i]
+		if ach_value(a["kind"]) >= float(a["target"]):
+			ach[i] = true
+			coins += int(a["reward"])
+			pending_ach.append(a["name"])
+			newly.append(a)
+	if newly.size() > 0:
+		coins_changed.emit()
+	return newly
+
+# ---------------- daily reward ----------------
+func today() -> String:
+	return Time.get_date_string_from_system(true)
+
+func daily_available() -> bool:
+	return last_daily != today()
+
+func next_streak() -> int:
+	var yday: String = Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) - 86400)
+	if last_daily == yday:
+		return streak + 1
+	return 1
+
+func daily_reward_for(s: int) -> int:
+	return 100 * mini(s, 7)
+
+func claim_daily() -> int:
+	if not daily_available():
+		return 0
+	var s: int = next_streak()
+	var r: int = daily_reward_for(s)
+	streak = s
+	last_daily = today()
+	coins += r
+	save_game()
+	coins_changed.emit()
+	return r

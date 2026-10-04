@@ -9,6 +9,14 @@ var engine: AudioStreamPlayer
 var music: AudioStreamPlayer
 var engine_running := false
 
+# Kenney (CC0) ফাইল -> সাউন্ডের নাম. ফাইল না থাকলে তৈরি-করা সাউন্ড ব্যবহার হবে।
+const FILES := {
+	"click": "click_003", "unlock": "confirmation_001", "go": "confirmation_002", "ach": "confirmation_004",
+	"error": "error_001", "tick": "tick_001", "coin": "pepSound3", "fuel": "powerUp3", "star": "powerUp1",
+	"daily": "powerUp5", "flip": "powerUp7", "low": "twoTone1",
+	"crash": "impactMetal_heavy_000", "crash2": "impactGlass_heavy_000", "land": "impactSoft_heavy_000"
+}
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	streams["click"] = tone([[700.0, 0.04], [950.0, 0.05]], 0.35)
@@ -18,7 +26,20 @@ func _ready() -> void:
 	streams["star"] = tone([[880.0, 0.1], [1175.0, 0.1], [1568.0, 0.25]], 0.4)
 	streams["error"] = tone([[220.0, 0.12], [180.0, 0.18]], 0.4)
 	streams["crash"] = noise(0.55, 0.7)
-	for i in range(6):
+	streams["tick"] = tone([[800.0, 0.06]], 0.35)
+	streams["go"] = tone([[600.0, 0.08], [900.0, 0.2]], 0.4)
+	streams["low"] = tone([[500.0, 0.08], [500.0, 0.08]], 0.4)
+	streams["flip"] = tone([[700.0, 0.06], [1100.0, 0.12]], 0.4)
+	streams["land"] = noise(0.15, 0.4)
+	streams["ach"] = streams["unlock"]
+	streams["daily"] = streams["star"]
+	for k in FILES.keys():
+		var path: String = "res://%s.ogg" % FILES[k]
+		if ResourceLoader.exists(path):
+			var st = load(path)
+			if st != null:
+				streams[k] = st
+	for i in range(8):
 		var p := AudioStreamPlayer.new()
 		add_child(p)
 		pool.append(p)
@@ -34,6 +55,13 @@ func _ready() -> void:
 func play(n: String) -> void:
 	if not Game.sound_on:
 		return
+	if not streams.has(n):
+		return
+	if n == "crash" and streams.has("crash2"):
+		play_one("crash2")
+	play_one(n)
+
+func play_one(n: String) -> void:
 	if not streams.has(n):
 		return
 	for p in pool:

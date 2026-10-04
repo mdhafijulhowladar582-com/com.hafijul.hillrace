@@ -38,7 +38,7 @@ func _ready() -> void:
 	tw2.tween_property(car_node, "position:y", y0, 0.35).set_trans(Tween.TRANS_SINE)
 
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 14)
+	vb.add_theme_constant_override("separation", 12)
 	add_child(vb)
 	var title := UI.label("HILL RACE", 120, Color.WHITE)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -59,10 +59,13 @@ func _ready() -> void:
 	settings.pressed.connect(func(): main.go("settings"))
 	row.add_child(settings)
 	vb.add_child(row)
+	var trophies := UI.button("TROPHIES", UI.ORANGE, 38, Vector2(460, 80))
+	trophies.pressed.connect(func(): main.go("ach"))
+	vb.add_child(trophies)
 	vb.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
 	vb.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	vb.grow_vertical = Control.GROW_DIRECTION_BOTH
-	vb.position.y -= 40.0
+	vb.position.y -= 50.0
 
 	var badge := UI.coin_badge()
 	add_child(badge)
@@ -70,10 +73,68 @@ func _ready() -> void:
 	var stl := UI.label("Stars: %d / 30" % Game.total_stars(), 32, UI.GOLD)
 	add_child(stl)
 	stl.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT, Control.PRESET_MODE_MINSIZE, 24)
-	var ver := UI.label("v1.0", 22, Color(1, 1, 1, 0.7))
+	var ver := UI.label("v1.2", 22, Color(1, 1, 1, 0.7))
 	add_child(ver)
 	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
 
 	vb.modulate.a = 0.0
 	var tw3 := create_tween()
 	tw3.tween_property(vb, "modulate:a", 1.0, 0.4)
+
+	if Game.pending_ach.size() > 0:
+		UI.toast(self, "Achievement unlocked: " + ", ".join(PackedStringArray(Game.pending_ach)))
+		Sfx.play("ach")
+		Game.pending_ach.clear()
+	if Game.daily_available():
+		call_deferred("show_daily")
+
+func show_daily() -> void:
+	var s: int = Game.next_streak()
+	var cur_day: int = mini(s, 7)
+	var ov := Control.new()
+	add_child(ov)
+	ov.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	ov.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var card := UI.panel_box(Color(0.06, 0.08, 0.16, 0.97), 28)
+	ov.add_child(card)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 14)
+	card.add_child(v)
+	var t := UI.label("DAILY REWARD", 56, UI.GOLD)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(t)
+	var days := HBoxContainer.new()
+	days.alignment = BoxContainer.ALIGNMENT_CENTER
+	days.add_theme_constant_override("separation", 8)
+	for d in range(1, 8):
+		var pc := PanelContainer.new()
+		var col := Color(1, 1, 1, 0.12)
+		if d < cur_day:
+			col = Color(0.18, 0.69, 0.30, 0.6)
+		elif d == cur_day:
+			col = UI.GOLD
+		pc.add_theme_stylebox_override("panel", UI.style(col, 14, Color(0, 0, 0, 0), 0))
+		var dv := VBoxContainer.new()
+		dv.add_child(UI.label("Day %d" % d, 20, Color.WHITE))
+		dv.add_child(UI.label("%d" % Game.daily_reward_for(d), 26, Color.WHITE))
+		pc.add_child(dv)
+		days.add_child(pc)
+	v.add_child(days)
+	var amount := UI.label("+%s coins" % UI.money(Game.daily_reward_for(s)), 52, UI.GOLD)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(amount)
+	var note := UI.label("Come back every day for bigger rewards!", 26, Color(1, 1, 1, 0.85))
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(note)
+	var claim := UI.button("CLAIM", UI.GREEN, 48, Vector2(0, 100))
+	claim.pressed.connect(func():
+		Game.claim_daily()
+		Sfx.play("daily")
+		ov.queue_free())
+	v.add_child(claim)
+	card.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	card.grow_vertical = Control.GROW_DIRECTION_BOTH
