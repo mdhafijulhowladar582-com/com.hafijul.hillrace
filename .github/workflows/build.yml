@@ -1,1 +1,59 @@
+name: Build Android APK
 
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup export templates
+        run: |
+          V="${GODOT_VERSION:-4.3}"
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mkdir -v -p ~/.config/godot/
+          if [ -d "/root/.local/share/godot/export_templates/${V}.stable" ]; then
+            mv /root/.local/share/godot/export_templates/${V}.stable ~/.local/share/godot/export_templates/${V}.stable
+          fi
+          ls ~/.local/share/godot/export_templates/
+
+      - name: Configure Android SDK and debug keystore
+        run: |
+          ANDROID_SDK="${ANDROID_HOME:-/usr/lib/android-sdk}"
+          JAVA_DIR="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which javac))))}"
+          echo "SDK: $ANDROID_SDK  JAVA: $JAVA_DIR"
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          for F in editor_settings-4.tres editor_settings-4.3.tres; do
+          cat > ~/.config/godot/$F <<EOT
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_SDK"
+          export/android/java_sdk_path = "$JAVA_DIR"
+          export/android/debug_keystore = "$PWD/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOT
+          done
+
+      - name: Import project
+        run: godot --headless --import || true
+
+      - name: Export APK
+        run: |
+          mkdir -v -p build/android
+          godot --headless --verbose --export-debug "Android" build/android/HillRace.apk
+          ls -la build/android
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: HillRace-apk
+          path: build/android/HillRace.apk
+          if-no-files-found: error
