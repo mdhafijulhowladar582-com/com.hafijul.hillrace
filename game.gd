@@ -22,7 +22,11 @@ var sel_map := 0
 var sound_on := true
 var music_on := true
 var debug_on := false
-var tune := {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0}
+var tune := {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0, "air": 1.0, "stab": 1.0}
+var swap_pedals := false
+var mode := "adventure"
+var ghost_level := 0
+var ghost_best := {}
 var achievements: Array = []
 var ach: Array = []
 var pending_ach: Array = []
@@ -30,6 +34,9 @@ var stats := {"runs": 0, "coins_picked": 0, "flips": 0, "best_air": 0.0, "best_d
 var last_daily := ""
 var streak := 0
 var tutorial_done := false
+var vibrate_on := true
+var mission_day := ""
+var missions: Array = []
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -37,11 +44,12 @@ func _ready() -> void:
 	build_achievements()
 	reset_state()
 	load_game()
+	refresh_missions()
 
 # ---------------- data ----------------
 # order: name, price, desc, style, body color, cabin color, power, vmax(rad/s), grip, mass, fuel, stiffness, damping, wheel radius, wheel x, wheel y, width, height
 func make_car(n: String, price: int, desc: String, style: String, c1: Color, c2: Color, power: float, vmax: float, grip: float, mass: float, fuel: float, stiff: float, damp: float, wr: float, wx: float, wy: float, cw: float, ch: float) -> Dictionary:
-	return {"name": n, "price": price, "desc": desc, "style": style, "c1": c1, "c2": c2, "power": power, "vmax": vmax, "grip": grip, "mass": mass, "fuel": fuel, "stiff": stiff, "damp": damp, "wr": wr, "wx": wx, "wy": wy, "cw": cw, "ch": ch}
+	return {"name": n, "price": price, "desc": desc, "style": style, "c1": c1, "c2": c2, "power": power, "vmax": vmax, "grip": grip, "mass": mass, "fuel": fuel, "stiff": stiff, "damp": damp, "wr": wr, "wx": wx, "wy": wy, "cw": cw, "ch": ch, "ability": ""}
 
 func make_map(n: String, price: int, sky1: String, sky2: String, ground: String, grass: String, bg1: String, bg2: String, bg3: String, extra: Dictionary) -> Dictionary:
 	var m := {
@@ -92,6 +100,12 @@ func build_data() -> void:
 	maps.append(make_map("Space Station", 35000, "000008", "1a0b3b", "3a3f4b", "6ee7ff", "2a1b4d", "1c1236", "110a26",
 		{"desc": "Low gravity, slippery metal.", "grav": 0.5, "fric": 0.8, "rough": 7.0, "fuel": 1.2, "stars": true, "clouds": false, "orb": Color("9775fa"), "orb_r": 90.0, "lights": true, "dust": Color("8ecae6"), "decor": "crystal", "decor_c": Color("66d9e8")}))
 
+	# বিশেষ ক্ষমতা: nitro (বাটন), hop (লাফ বাটন), smash (পাথর ভাঙে)
+	cars[4]["ability"] = "smash"
+	cars[6]["ability"] = "nitro"
+	cars[7]["ability"] = "hop"
+	cars[9]["ability"] = "nitro"
+
 # ---------------- save ----------------
 func reset_state() -> void:
 	coins = 0
@@ -108,7 +122,7 @@ func reset_state() -> void:
 		upgrades.append([0, 0, 0, 0])
 		best.append(0.0)
 		stars.append(0)
-	tune = {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0}
+	tune = {"power": 1.0, "grip": 1.0, "susp": 1.0, "grav": 1.0, "air": 1.0, "stab": 1.0}
 	ach = []
 	for i in range(achievements.size()):
 		ach.append(false)
@@ -117,6 +131,8 @@ func reset_state() -> void:
 	last_daily = ""
 	streak = 0
 	tutorial_done = false
+	mission_day = ""
+	missions = []
 
 func load_game() -> void:
 	if not FileAccess.file_exists(SAVE_PATH):
@@ -173,6 +189,20 @@ func load_game() -> void:
 	last_daily = str(parsed.get("last_daily", ""))
 	streak = int(parsed.get("streak", 0))
 	tutorial_done = bool(parsed.get("tutorial", false))
+	vibrate_on = bool(parsed.get("vibrate", true))
+	swap_pedals = bool(parsed.get("swap", false))
+	ghost_level = clampi(int(parsed.get("ghost_level", 0)), 0, 2)
+	var gb = parsed.get("ghost_best")
+	if gb is Dictionary:
+		for k in gb.keys():
+			ghost_best[str(k)] = float(gb[k])
+	mission_day = str(parsed.get("mission_day", ""))
+	var ms = parsed.get("missions")
+	if ms is Array:
+		missions = []
+		for m in ms:
+			if m is Dictionary:
+				missions.append({"kind": str(m.get("kind", "")), "target": float(m.get("target", 1)), "reward": int(m.get("reward", 0)), "prog": float(m.get("prog", 0)), "claimed": bool(m.get("claimed", false))})
 	if not cars_unlocked[sel_car]:
 		sel_car = 0
 	if not maps_unlocked[sel_map]:
@@ -184,7 +214,7 @@ func save_game() -> void:
 		"sound": sound_on, "music": music_on, "debug": debug_on,
 		"cars_unlocked": cars_unlocked, "maps_unlocked": maps_unlocked,
 		"best": best, "stars": stars, "upgrades": upgrades, "tune": tune,
-		"ach": ach, "stats": stats, "last_daily": last_daily, "streak": streak, "tutorial": tutorial_done
+		"ach": ach, "stats": stats, "last_daily": last_daily, "streak": streak, "tutorial": tutorial_done, "vibrate": vibrate_on, "swap": swap_pedals, "ghost_level": ghost_level, "ghost_best": ghost_best, "mission_day": mission_day, "missions": missions
 	}
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
@@ -192,6 +222,12 @@ func save_game() -> void:
 
 func reset_progress() -> void:
 	reset_state()
+	ghost_best = {}
+	var da := DirAccess.open("user://")
+	if da:
+		for fn in da.get_files():
+			if fn.begins_with("ghost_"):
+				da.remove(fn)
 	save_game()
 	coins_changed.emit()
 
@@ -288,6 +324,10 @@ func submit_run(map_i: int, dist: float, pickups: int, flips: int, air_best: flo
 	stats["flips"] = int(stats["flips"]) + flips
 	stats["best_air"] = maxf(float(stats["best_air"]), air_best)
 	stats["best_dist"] = maxf(float(stats["best_dist"]), dist)
+	mission_add("flips", float(flips))
+	mission_add("coins", float(pickups))
+	mission_add("runs", 1.0)
+	mission_add("dist", dist)
 	check_achievements()
 	var names: Array = pending_ach.duplicate()
 	pending_ach.clear()
@@ -388,3 +428,108 @@ func claim_daily() -> int:
 	save_game()
 	coins_changed.emit()
 	return r
+
+# ---------------- vibration ----------------
+func vibrate(ms: int) -> void:
+	if vibrate_on:
+		Input.vibrate_handheld(ms)
+
+# ---------------- daily missions ----------------
+func refresh_missions() -> void:
+	var t: String = today()
+	if mission_day == t and missions.size() == 3:
+		return
+	mission_day = t
+	missions = []
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(t)
+	var kinds := ["flips", "dist", "coins", "runs"]
+	for i in range(kinds.size() - 1, 0, -1):
+		var j: int = rng.randi_range(0, i)
+		var tmp = kinds[i]
+		kinds[i] = kinds[j]
+		kinds[j] = tmp
+	var targets := {"flips": [3, 5, 8], "dist": [400, 700, 1000], "coins": [15, 25, 40], "runs": [3, 5, 8]}
+	var base := {"flips": 200, "dist": 250, "coins": 200, "runs": 150}
+	for i in range(3):
+		var k: String = kinds[i]
+		var lvl: int = rng.randi_range(0, 2)
+		var tg: int = targets[k][lvl]
+		var rw: int = int(float(base[k]) * (1.0 + 0.5 * float(lvl)))
+		missions.append({"kind": k, "target": float(tg), "reward": rw, "prog": 0.0, "claimed": false})
+	save_game()
+
+func mission_add(kind: String, value: float) -> void:
+	refresh_missions()
+	for m in missions:
+		if m["kind"] == kind:
+			if kind == "dist":
+				m["prog"] = maxf(float(m["prog"]), value)
+			else:
+				m["prog"] = float(m["prog"]) + value
+
+func mission_text(m: Dictionary) -> String:
+	var k: String = m["kind"]
+	var t: int = int(m["target"])
+	if k == "flips":
+		return "Do %d flips" % t
+	if k == "dist":
+		return "Reach %d m in one run" % t
+	if k == "coins":
+		return "Collect %d coins" % t
+	return "Play %d runs" % t
+
+func missions_claimable() -> int:
+	refresh_missions()
+	var n := 0
+	for m in missions:
+		if not m["claimed"] and float(m["prog"]) >= float(m["target"]):
+			n += 1
+	return n
+
+func claim_mission(i: int) -> int:
+	refresh_missions()
+	if i < 0 or i >= missions.size():
+		return 0
+	var m: Dictionary = missions[i]
+	if m["claimed"] or float(m["prog"]) < float(m["target"]):
+		return 0
+	m["claimed"] = true
+	var r: int = int(m["reward"])
+	coins += r
+	save_game()
+	coins_changed.emit()
+	return r
+
+# ---------------- ghost (সেরা রানের রেকর্ড) ----------------
+func ghost_key(map_i: int, car_i: int) -> String:
+	return "m%d_c%d" % [map_i, car_i]
+
+func ghost_dist(map_i: int, car_i: int) -> float:
+	return float(ghost_best.get(ghost_key(map_i, car_i), 0.0))
+
+func ghost_save(map_i: int, car_i: int, samples: Array, dist: float) -> void:
+	var key: String = ghost_key(map_i, car_i)
+	var f := FileAccess.open("user://ghost_%s.json" % key, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify({"dist": dist, "s": samples}))
+	ghost_best[key] = dist
+	save_game()
+
+func ghost_load(map_i: int, car_i: int) -> Dictionary:
+	var path: String = "user://ghost_%s.json" % ghost_key(map_i, car_i)
+	if not FileAccess.file_exists(path):
+		return {}
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {}
+	var parsed = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return {}
+	var arr = parsed.get("s")
+	if not (arr is Array) or arr.size() < 6:
+		return {}
+	var ps := PackedFloat32Array()
+	for v in arr:
+		ps.append(float(v))
+	return {"dist": float(parsed.get("dist", 0.0)), "s": ps}

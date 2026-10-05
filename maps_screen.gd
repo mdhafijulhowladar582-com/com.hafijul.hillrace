@@ -39,7 +39,10 @@ func _ready() -> void:
 	var back := UI.button("BACK", UI.GRAY, 30, Vector2(170, 66))
 	back.pressed.connect(func(): main.go("menu"))
 	top.add_child(back)
-	var title := UI.label("SELECT MAP", 50, Color.WHITE)
+	var title_txt := "SELECT MAP"
+	if Game.mode == "ghost":
+		title_txt = "GHOST RACE - SELECT MAP"
+	var title := UI.label(title_txt, 46, Color.WHITE)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	top.add_child(title)
@@ -210,7 +213,11 @@ func make_card(i: int) -> Control:
 	var sp := Control.new()
 	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sr.add_child(sp)
-	sr.add_child(UI.label("Best: %d m" % int(Game.best[i]), 22, UI.GOLD))
+	var best_txt: String = "Best: %d m" % int(Game.best[i])
+	if Game.mode == "ghost":
+		var gdist: float = Game.ghost_dist(i, Game.sel_car)
+		best_txt = "Ghost: %d m" % int(gdist) if gdist > 0.0 else "No ghost yet"
+	sr.add_child(UI.label(best_txt, 22, UI.GOLD))
 	v.add_child(sr)
 	var act: Button
 	if unlocked:

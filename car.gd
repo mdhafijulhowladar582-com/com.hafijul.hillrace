@@ -2,6 +2,7 @@ extends Node2D
 # ফিজিক্স গাড়ি: Game.cars[idx] এর তথ্য থেকে তৈরি হয়।
 
 signal crashed
+signal smashed(body)
 
 const CarBody = preload("res://car_body.gd")
 const WheelVis = preload("res://wheel_vis.gd")
@@ -23,6 +24,13 @@ var dust: Array = []
 var exhaust: CPUParticles2D
 var wr := 30.0
 var on_ground := false
+var boost := false
+var surf_fric := 1.0
+var surf_drag := 0.0
+var base_drag := 0.0
+var pad_t := 0.0
+var ch_h := 34.0
+var flame: CPUParticles2D
 var head_local := Vector2.ZERO
 var body_vis
 var air_torque := 40000.0
@@ -57,20 +65,26 @@ func _ready() -> void:
 	var mass: float = cdata["mass"]
 	var grav: float = float(map.get("grav", 1.0)) * float(Game.tune["grav"])
 	var fric: float = float(map.get("fric", 1.0))
-	air_torque = 10000.0 * mass
+	air_torque = 16000.0 * mass
 
 	# ---- chassis ----
 	chassis = RigidBody2D.new()
 	chassis.mass = mass
 	chassis.collision_layer = 2
-	chassis.collision_mask = 1 | 8
+	var smash_car: bool = String(cdata["ability"]) == "smash"
+	var cmask: int = 1 | 8 | 32
+	if not smash_car:
+		cmask |= 16
+	chassis.collision_mask = cmask
 	chassis.can_sleep = false
 	chassis.continuous_cd = RigidBody2D.CCD_MODE_CAST_RAY
 	chassis.angular_damp = 1.0
 	chassis.linear_damp = float(map.get("drag", 0.0))
+	base_drag = float(map.get("drag", 0.0))
 	chassis.gravity_scale = grav
 	chassis.center_of_mass_mode = RigidBody2D.CENTER_OF_MASS_MODE_CUSTOM
-	chassis.center_of_mass = Vector2(0, ch * 0.4)
+	ch_h = ch
+	chassis.center_of_mass = Vector2(0, ch * 0.25 * float(Game.tune["stab"]))
 	chassis.position = start_pos
 	var cpm := PhysicsMaterial.new()
 	cpm.friction = 0.4
@@ -103,6 +117,20 @@ func _ready() -> void:
 	chassis.add_child(head)
 	head.body_entered.connect(func(_b): crashed.emit())
 
+	# ---- monster: পাথর ভাঙার সেন্সর ----
+	if smash_car:
+		var sm := Area2D.new()
+		sm.collision_layer = 0
+		sm.collision_mask = 16
+		sm.position = Vector2(20.0, wy * 0.6)
+		var sms := CollisionShape2D.new()
+		var smr := RectangleShape2D.new()
+		smr.size = Vector2(cw + 120.0, wr * 2.0 + 30.0)
+		sms.shape = smr
+		sm.add_child(sms)
+		chassis.add_child(sm)
+		sm.body_entered.connect(func(b): smashed.emit(b))
+
 	# ---- headlights ----
 	if map.get("lights", false):
 		var beam := Polygon2D.new()
@@ -114,6 +142,9 @@ func _ready() -> void:
 	exhaust = make_particles(Color(0.7, 0.7, 0.7), 18, 0.6, 30.0, 80.0, 3.0, 7.0, Vector2(-1, -0.3), 25.0, Vector2(0, -40))
 	exhaust.position = Vector2(-cw * 0.5 - 6.0, ch * 0.3)
 	chassis.add_child(exhaust)
+	flame = make_particles(Color(0.3, 0.7, 1.0), 40, 0.35, 160.0, 260.0, 5.0, 11.0, Vector2(-1, 0.05), 12.0, Vector2.ZERO)
+	flame.position = Vector2(-cw * 0.5 - 10.0, ch * 0.2)
+	chassis.add_child(flame)
 
 	# ---- wheels + suspension ----
 	var dust_col: Color = map.get("dust", Color(0.7, 0.6, 0.4))
@@ -125,7 +156,7 @@ func _ready() -> void:
 		var w := RigidBody2D.new()
 		w.mass = 1.5 * wr / 30.0
 		w.collision_layer = 4
-		w.collision_mask = 1 | 8
+		w.collision_mask = cmask
 		w.can_sleep = false
 		w.continuous_cd = RigidBody2D.CCD_MODE_CAST_RAY
 		w.contact_monitor = true
@@ -180,11 +211,13 @@ func apply_tuning() -> void:
 	var fric: float = float(map.get("fric", 1.0))
 	var grav: float = float(map.get("grav", 1.0)) * float(Game.tune["grav"])
 	for m in wmats:
-		m.friction = float(stats["grip"]) * fric
+		m.friction = float(stats["grip"]) * fric * surf_fric
 	for s in springs:
 		s.stiffness = stats["stiff"]
 		s.damping = stats["damp"]
 	chassis.gravity_scale = grav
+	chassis.center_of_mass = Vector2(0, ch_h * 0.25 * float(Game.tune["stab"]))
+	chassis.linear_damp = base_drag + surf_drag
 	for w in wheels:
 		w.gravity_scale = grav
 
@@ -198,20 +231,34 @@ func _process(d: float) -> void:
 		p.global_position = wheels[i].global_position + Vector2(0, wr * 0.8)
 		p.emitting = wheels[i].get_contact_count() > 0 and spd > 150.0
 	exhaust.emitting = gas
+	flame.emitting = boost or pad_t > 0.0
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	on_ground = false
 	for w in wheels:
 		if w.get_contact_count() > 0:
 			on_ground = true
-	var power: float = stats["power"]
-	var vmax: float = stats["vmax"]
-	if gas:
+	pad_t = maxf(0.0, pad_t - delta)
+	var pm := 1.0
+	var vm := 1.0
+	if boost:
+		pm = 1.6
+		vm = 1.35
+	if pad_t > 0.0:
+		pm = maxf(pm, 2.0)
+		vm = maxf(vm, 1.6)
+	var power: float = float(stats["power"]) * pm
+	var vmax: float = float(stats["vmax"]) * vm
+	var stab: float = float(Game.tune["stab"])
+	# বাতাসে ঘর্ষণ কম (ঘুরতে পারে), মাটিতে বেশি (স্ট্যাবিলিটি স্লাইডার)
+	chassis.angular_damp = 0.6 * stab if on_ground else 0.15
+	var air: float = air_torque * float(Game.tune["air"])
+	if gas or pad_t > 0.0:
 		for w in wheels:
 			if w.angular_velocity < vmax:
 				w.apply_torque(power)
-		if not on_ground:
-			chassis.apply_torque(-air_torque)
+		if gas and not on_ground:
+			chassis.apply_torque(-air)
 	elif brake:
 		for w in wheels:
 			if w.angular_velocity > 1.0:
@@ -219,4 +266,27 @@ func _physics_process(_delta: float) -> void:
 			elif w.angular_velocity > -MAX_REVERSE:
 				w.apply_torque(-power * 0.6)
 		if not on_ground:
-			chassis.apply_torque(air_torque)
+			chassis.apply_torque(air)
+
+# বুস্ট প্যাড: হঠাৎ গতি + গাড়ি হালকা ঘুরে যায় (সামলাতে হবে)
+func boost_pad(sgn: float) -> void:
+	pad_t = 1.3
+	var dir := Vector2.RIGHT.rotated(chassis.rotation)
+	chassis.apply_central_impulse(dir * chassis.mass * 520.0)
+	for w in wheels:
+		w.apply_central_impulse(dir * w.mass * 520.0)
+	chassis.apply_torque_impulse(sgn * air_torque * 0.25)
+
+# মুন রোভারের HOP: মাটি থেকে লাফ
+func hop() -> void:
+	chassis.apply_central_impulse(Vector2(0, -chassis.mass * 560.0))
+	for w in wheels:
+		w.apply_central_impulse(Vector2(0, -w.mass * 560.0))
+
+# বরফ/কাদা/বৃষ্টির প্রভাব: ঘর্ষণ গুণক ও অতিরিক্ত বাধা
+func set_surface(fm: float, drag: float) -> void:
+	if absf(fm - surf_fric) < 0.01 and absf(drag - surf_drag) < 0.01:
+		return
+	surf_fric = fm
+	surf_drag = drag
+	apply_tuning()

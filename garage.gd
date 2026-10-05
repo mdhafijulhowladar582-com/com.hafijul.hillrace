@@ -131,6 +131,18 @@ func left_panel() -> Control:
 	ds.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	ds.custom_minimum_size = Vector2(420, 0)
 	v.add_child(ds)
+	var ab: String = c["ability"]
+	if ab != "":
+		var atxt := ""
+		if ab == "nitro":
+			atxt = "Ability: NITRO boost button"
+		elif ab == "hop":
+			atxt = "Ability: HOP jump button"
+		elif ab == "smash":
+			atxt = "Ability: smashes rocks"
+		var al := UI.label(atxt, 26, UI.GOLD)
+		al.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		v.add_child(al)
 	var wr: float = c["wr"]
 	v.add_child(bar_row("Speed", float(st["vmax"]) * wr / 1700.0))
 	v.add_child(bar_row("Power", float(st["power"]) / 150000.0))

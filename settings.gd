@@ -52,6 +52,14 @@ func _ready() -> void:
 		Game.music_on = v
 		Sfx.apply_music()
 		Game.save_game()))
+	vb.add_child(make_toggle("Vibration", Game.vibrate_on, func(v):
+		Game.vibrate_on = v
+		Game.save_game()
+		if v:
+			Game.vibrate(60)))
+	vb.add_child(make_toggle("Swap Pedals", Game.swap_pedals, func(v):
+		Game.swap_pedals = v
+		Game.save_game()))
 	vb.add_child(make_toggle("Debug Info", Game.debug_on, func(v):
 		Game.debug_on = v
 		Game.save_game()))
@@ -64,7 +72,7 @@ func _ready() -> void:
 			Game.reset_progress()
 			main.go("settings"))
 	vb.add_child(reset)
-	var about := UI.label("Hill Race v1.0   com.navalabs.hillrace", 24, Color(1, 1, 1, 0.8))
+	var about := UI.label("Hill Race v1.5   com.navalabs.hillrace", 24, Color(1, 1, 1, 0.8))
 	about.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(about)
 	vb.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)

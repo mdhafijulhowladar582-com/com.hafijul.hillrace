@@ -47,7 +47,7 @@ func _ready() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(sub)
 	var play := UI.button("PLAY", UI.GREEN, 60, Vector2(460, 120))
-	play.pressed.connect(func(): main.go("maps"))
+	play.pressed.connect(func(): main.go("mode"))
 	vb.add_child(play)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -59,9 +59,20 @@ func _ready() -> void:
 	settings.pressed.connect(func(): main.go("settings"))
 	row.add_child(settings)
 	vb.add_child(row)
-	var trophies := UI.button("TROPHIES", UI.ORANGE, 38, Vector2(460, 80))
+	var row2 := HBoxContainer.new()
+	row2.alignment = BoxContainer.ALIGNMENT_CENTER
+	row2.add_theme_constant_override("separation", 16)
+	var trophies := UI.button("TROPHIES", UI.ORANGE, 34, Vector2(222, 80))
 	trophies.pressed.connect(func(): main.go("ach"))
-	vb.add_child(trophies)
+	row2.add_child(trophies)
+	var mc: int = Game.missions_claimable()
+	var mtxt := "MISSIONS"
+	if mc > 0:
+		mtxt = "MISSIONS (%d)" % mc
+	var missions := UI.button(mtxt, UI.GREEN if mc > 0 else UI.GRAY, 30, Vector2(222, 80))
+	missions.pressed.connect(func(): main.go("missions"))
+	row2.add_child(missions)
+	vb.add_child(row2)
 	vb.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
 	vb.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	vb.grow_vertical = Control.GROW_DIRECTION_BOTH
@@ -73,7 +84,7 @@ func _ready() -> void:
 	var stl := UI.label("Stars: %d / 30" % Game.total_stars(), 32, UI.GOLD)
 	add_child(stl)
 	stl.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT, Control.PRESET_MODE_MINSIZE, 24)
-	var ver := UI.label("v1.2", 22, Color(1, 1, 1, 0.7))
+	var ver := UI.label("v1.5", 22, Color(1, 1, 1, 0.7))
 	add_child(ver)
 	ver.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
 

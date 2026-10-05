@@ -14,6 +14,8 @@ func _ready() -> void:
 		"garage": preload("res://garage.gd"),
 		"settings": preload("res://settings.gd"),
 		"ach": preload("res://achievements.gd"),
+		"missions": preload("res://missions.gd"),
+		"mode": preload("res://mode_select.gd"),
 		"game": preload("res://gameplay.gd"),
 	}
 	var fl := CanvasLayer.new()

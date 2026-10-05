@@ -5,6 +5,8 @@ const CarScript = preload("res://car.gd")
 const ItemScript = preload("res://collectible.gd")
 const BgScript = preload("res://background.gd")
 const UI = preload("res://ui.gd")
+const SpeedoScript = preload("res://speedo.gd")
+const RaceBarScript = preload("res://race_bar.gd")
 
 const CHUNK_W := 400.0
 const STEP := 20.0
@@ -13,6 +15,11 @@ const FUEL_DRAIN := 1.6    # প্রতি সেকেন্ডে ফুয�
 const FUEL_GAP0 := 30      # প্রথম ফুয়েল ক্যানের পরের দূরত্ব (চাংক)
 const FUEL_GAP_STEP := 8   # প্রতিবার ফাঁক এতটা করে বাড়ে (তাই শেষে ফুয়েল ফুরায়)
 const FUEL_GAIN := 0.25    # একটা ক্যানে ট্যাংকের কত অংশ ভরে
+const CP_DIST := 500.0     # চেকপয়েন্ট প্রতি কত মিটারে
+const NITRO_TIME := 6.0
+const PERFECT_BONUS := 40
+const MAGNET_TIME := 10.0
+const X2_TIME := 10.0
 const FLIP_BONUS := 50     # প্রতি ফ্লিপে বোনাস কয়েন
 const AIR_BONUS := 15.0    # প্রতি সেকেন্ড বাতাসে থাকার বোনাস
 
@@ -26,6 +33,47 @@ var bg
 var terrain_root: Node2D
 var chunks := {}
 var fuel_chunks := {}
+var coin_items: Array = []
+var last_pad := -10.0
+var ghost_mode := false
+var ghost_active := false
+var ghost_samples := PackedFloat32Array()
+var ghost_dist_rec := 0.0
+var ghost_node: Node2D
+var ghost_wheels: Array = []
+var ghost_wr := 30.0
+var ghost_t := 0.0
+var ghost_done := false
+var ghost_speed := 1.0
+var ghost_target := 0.0
+var ghost_win := false
+var ghost_bonus := 0
+var rec: Array = []
+var rec_acc := 0.0
+var race_bar
+var arrow_r: Polygon2D
+var arrow_l: Polygon2D
+var weather_ok := false
+var weather_target := 0
+var weather_block := -1
+var rain_level := 0.0
+var fog_level := 0.0
+var rain_fx: CPUParticles2D
+var fog_rect: TextureRect
+var dark_rect: ColorRect
+var last_patch := 0
+var nitro_t := 0.0
+var magnet_t := 0.0
+var x2_t := 0.0
+var special_t := 0.0
+var special_cd := 0.0
+var ability := ""
+var ability_btn: Button
+var next_cp := 1
+var best_start := 0.0
+var record_shown := false
+var pw_labels := {}
+var speedo
 var flipped_t := 0.0
 var targets: Array = []
 
@@ -97,6 +145,7 @@ func bank_run() -> void:
 	game_over = true
 	if max_dist > 1.0 or run_coins > 0:
 		air_best = maxf(air_best, air_time)
+		save_ghost()
 		Game.submit_run(map_idx, max_dist, run_coins, flips, air_best, bonus_pts)
 
 func _ready() -> void:
@@ -109,6 +158,19 @@ func _ready() -> void:
 	fuel_max = stats["fuel"]
 	fuel = fuel_max
 	tutorial_active = not Game.tutorial_done
+	best_start = float(Game.best[map_idx])
+	ghost_mode = Game.mode == "ghost"
+	var gd: Dictionary = Game.ghost_load(map_idx, car_idx)
+	ghost_dist_rec = float(gd.get("dist", 0.0))
+	if ghost_mode and not gd.is_empty():
+		ghost_active = true
+		ghost_samples = gd["s"]
+		var lv: int = Game.ghost_level
+		ghost_speed = [1.0, 1.05, 1.10][lv]
+		ghost_target = ghost_dist_rec * ghost_speed
+		ghost_bonus = int(150.0 * [1.0, 1.5, 2.0][lv] * (1.0 + 0.1 * float(map_idx)))
+	weather_ok = map_idx in [0, 1, 3, 4, 5, 8]
+	ability = String(Game.cars[car_idx].get("ability", ""))
 	RenderingServer.set_default_clear_color(map["sky2"])
 
 	var bgl := CanvasLayer.new()
@@ -124,6 +186,14 @@ func _ready() -> void:
 	add_child(terrain_root)
 	add_wall()
 
+	if ghost_active:
+		ghost_node = UI.car_preview(car_idx)
+		ghost_node.modulate = Color(0.7, 0.85, 1.0, 0.5)
+		add_child(ghost_node)
+		ghost_wheels = ghost_node.get_meta("wheels")
+		ghost_wr = float(Game.cars[car_idx]["wr"])
+		ghost_node.position = Vector2(ghost_samples[0], ghost_samples[1])
+
 	var cdata: Dictionary = Game.cars[car_idx]
 	car = CarScript.new()
 	car.idx = car_idx
@@ -132,6 +202,7 @@ func _ready() -> void:
 	add_child(car)
 	car.crashed.connect(func(): end_game("CRASHED!", true))
 	prev_rot = car.chassis.rotation
+	car.smashed.connect(_on_smash)
 
 	cam = Camera2D.new()
 	cam.position_smoothing_enabled = true
@@ -141,6 +212,7 @@ func _ready() -> void:
 	cam.position = car.chassis.position + Vector2(260, -100)
 
 	build_hud()
+	build_weather()
 	build_fuel_chunks()
 	update_chunks()
 	Sfx.start_engine()
@@ -183,13 +255,24 @@ func terrain_y(x: float) -> float:
 	var rough: float = map["rough"]
 	var wl: float = map["wl"]
 	var t: float = clampf((x - 300.0) / 1500.0, 0.0, 1.0)
-	var amp: float = (35.0 + minf(maxf(x, 0.0) * 0.025, 85.0)) * amp_m
+	var amp: float = (35.0 + minf(maxf(x, 0.0) * 0.025, 85.0) + minf(maxf(x - 6000.0, 0.0) * 0.0016, 60.0)) * amp_m
 	var y := 500.0
 	y += sin(x * 0.0025 * wl) * amp * t
 	y += sin(x * 0.007 * wl + 1.3) * amp * 0.35 * t
 	y += sin(x * 0.021 + 0.5) * (6.0 + rough) * t
 	y += sin(x * 0.047 + 2.0) * rough * 0.6 * t
+	y -= ramp_off(x)
 	return y
+
+# র‍্যাম্প: কিছু চাংকে লাফের ঢাল (ধীরে উঠে হঠাৎ নামে)
+func ramp_off(x: float) -> float:
+	var idx: int = int(floor(x / CHUNK_W))
+	if idx < 6 or idx % 14 != 6:
+		return 0.0
+	var u: float = (x - (float(idx) * CHUNK_W + 120.0)) / 170.0
+	if u < 0.0 or u > 1.0:
+		return 0.0
+	return 62.0 * u * u
 
 func add_wall() -> void:
 	var wall := StaticBody2D.new()
@@ -346,12 +429,62 @@ func build_chunk(idx: int) -> void:
 	fl.default_color = grass.lightened(0.15)
 	node.add_child(fl)
 
+	# বরফ / কাদার ছোপ
+	var ptype: int = patch_type_for_chunk(idx)
+	if ptype > 0:
+		var pl := PackedVector2Array()
+		var pxi: float = x0 + 50.0
+		while pxi <= x0 + 350.0:
+			pl.append(Vector2(pxi, terrain_y(pxi) - 1.0))
+			pxi += 10.0
+		var pln := Line2D.new()
+		pln.points = pl
+		pln.width = 18.0
+		pln.default_color = Color(0.72, 0.92, 1.0) if ptype == 1 else Color(0.36, 0.26, 0.16)
+		node.add_child(pln)
+
+	# চেকপয়েন্ট ব্যানার ও সেরা-দূরত্বের পতাকা
+	var cpw: float = CP_DIST * 50.0
+	var n_cp: int = int(floor((x0 + CHUNK_W - START_X) / cpw))
+	var n_prev: int = int(floor((x0 - START_X) / cpw))
+	if n_cp > n_prev and n_cp >= 1:
+		var xc: float = START_X + float(n_cp) * cpw
+		add_banner(node, xc, terrain_y(xc), "CHECKPOINT %d m" % int(float(n_cp) * CP_DIST), Color("e03131"), false)
+	if best_start >= 20.0:
+		var xb: float = START_X + best_start * 50.0
+		if xb >= x0 and xb < x0 + CHUNK_W:
+			add_banner(node, xb, terrain_y(xb), "BEST %d m" % int(best_start), Color("fab005"), true)
+
+	# পাথর (বাধা) ও কাঠের বাক্স
+	if idx >= 5 and idx % 14 != 6 and idx % 14 != 5:
+		if idx % 5 == 2:
+			var rx: float = x0 + rng.randf_range(150.0, 300.0)
+			add_rock(node, rx, terrain_y(rx), rng)
+		if idx % 7 == 3:
+			var bx: float = x0 + rng.randf_range(150.0, 300.0)
+			var bg0: float = terrain_y(bx)
+			add_crate(node, bx - 24.0, bg0 - 26.0)
+			add_crate(node, bx + 24.0, bg0 - 26.0)
+			add_crate(node, bx, bg0 - 72.0)
+
+	# বুস্ট প্যাড (র‍্যাম্পের ঠিক আগে এবং মাঝে মাঝে)
+	if idx >= 3 and (idx % 14 == 5 or (idx % 9 == 4 and idx % 14 != 6)):
+		var padx: float = x0 + 250.0
+		if idx % 14 != 5:
+			padx = x0 + rng.randf_range(100.0, 300.0)
+		spawn_pad(node, padx)
+
 	# coins and fuel
 	if idx >= 1:
 		var count: int = rng.randi_range(0, 2)
 		for k in range(count):
 			var cx: float = x0 + rng.randf_range(40.0, CHUNK_W - 40.0)
 			spawn_item(node, cx, terrain_y(cx) - rng.randf_range(50.0, 100.0), "coin")
+		if idx >= 4 and idx % 17 == 8:
+			var pk: int = rng.randi_range(0, 2)
+			var pkinds := ["nitro", "magnet", "x2"]
+			var ppx: float = x0 + rng.randf_range(60.0, CHUNK_W - 60.0)
+			spawn_item(node, ppx, terrain_y(ppx) - 75.0, pkinds[pk])
 		if fuel_chunks.has(idx):
 			var fx: float = x0 + CHUNK_W * 0.5
 			spawn_item(node, fx, terrain_y(fx) - 70.0, "fuel")
@@ -360,6 +493,18 @@ func spawn_item(parent: Node, x: float, y: float, kind: String) -> void:
 	var item = ItemScript.new()
 	item.kind = kind
 	item.position = Vector2(x, y)
+	parent.add_child(item)
+	item.body_entered.connect(_on_item.bind(item))
+	if kind == "coin":
+		coin_items.append(item)
+
+func spawn_pad(parent: Node, x: float) -> void:
+	var y: float = terrain_y(x)
+	var ang: float = atan2(terrain_y(x + 40.0) - terrain_y(x - 40.0), 80.0)
+	var item = ItemScript.new()
+	item.kind = "pad"
+	item.position = Vector2(x, y - 4.0)
+	item.rotation = ang
 	parent.add_child(item)
 	item.body_entered.connect(_on_item.bind(item))
 
@@ -386,15 +531,129 @@ func _on_item(body: Node, item) -> void:
 		return
 	if not car.is_ancestor_of(body):
 		return
-	if item.kind == "coin":
-		run_coins += 1
+	var k: String = item.kind
+	if k == "pad":
+		if time_t - last_pad < 1.2:
+			return
+		last_pad = time_t
+		car.boost_pad(1.0 if randf() < 0.5 else -1.0)
+		Sfx.play("flip")
+		Game.vibrate(50)
+		shake = maxf(shake, 8.0)
+		popup("BOOST!", Color("ffd43b"))
+		return
+	if k == "coin":
+		run_coins += 2 if x2_t > 0.0 else 1
 		Sfx.play("coin")
 		burst(item.global_position, Color("ffd43b"))
-	else:
+	elif k == "fuel":
 		fuel = minf(fuel_max, fuel + fuel_max * FUEL_GAIN)
 		Sfx.play("fuel")
 		burst(item.global_position, Color("ff6b6b"))
+	elif k == "nitro":
+		nitro_t = NITRO_TIME
+		Sfx.play("star")
+		Game.vibrate(40)
+		popup("NITRO!", Color("4dabf7"))
+		burst(item.global_position, Color("4dabf7"))
+	elif k == "magnet":
+		magnet_t = MAGNET_TIME
+		Sfx.play("star")
+		Game.vibrate(40)
+		popup("MAGNET!", Color("b197fc"))
+		burst(item.global_position, Color("b197fc"))
+	elif k == "x2":
+		x2_t = X2_TIME
+		Sfx.play("star")
+		Game.vibrate(40)
+		popup("DOUBLE COINS!", Color("ffd43b"))
+		burst(item.global_position, Color("ffd43b"))
 	item.queue_free()
+
+func _on_smash(b) -> void:
+	if not is_instance_valid(b) or not b.is_in_group("rock"):
+		return
+	burst(b.global_position, Color("adb5bd"))
+	b.queue_free()
+	Sfx.play("land")
+	Game.vibrate(30)
+	shake = maxf(shake, 6.0)
+
+# ---------------- obstacles / banners ----------------
+func add_rock(parent: Node, x: float, y: float, rng: RandomNumberGenerator) -> void:
+	var b := StaticBody2D.new()
+	b.collision_layer = 16
+	b.collision_mask = 0
+	b.position = Vector2(x, y + 4.0)
+	b.add_to_group("rock")
+	var sc: float = rng.randf_range(0.8, 1.1)
+	var pts := PackedVector2Array([Vector2(-34, 0), Vector2(-26, -24), Vector2(0, -32), Vector2(24, -26), Vector2(36, 0)])
+	for i in range(pts.size()):
+		pts[i] = pts[i] * sc
+	var cs := CollisionShape2D.new()
+	var sh := ConvexPolygonShape2D.new()
+	sh.points = pts
+	cs.shape = sh
+	b.add_child(cs)
+	var pg := Polygon2D.new()
+	pg.polygon = pts
+	pg.color = Color("868e96")
+	b.add_child(pg)
+	var hl := Polygon2D.new()
+	hl.polygon = PackedVector2Array([Vector2(-14, -20) * sc, Vector2(0, -30) * sc, Vector2(12, -22) * sc, Vector2(-2, -12) * sc])
+	hl.color = Color("adb5bd")
+	b.add_child(hl)
+	parent.add_child(b)
+
+func add_crate(parent: Node, x: float, y: float) -> void:
+	var c := RigidBody2D.new()
+	c.collision_layer = 32
+	c.collision_mask = 1 | 2 | 4 | 32
+	c.mass = 0.5
+	c.position = Vector2(x, y)
+	var cs := CollisionShape2D.new()
+	var sh := RectangleShape2D.new()
+	sh.size = Vector2(44, 44)
+	cs.shape = sh
+	c.add_child(cs)
+	var pg := Polygon2D.new()
+	pg.polygon = PackedVector2Array([Vector2(-22, -22), Vector2(22, -22), Vector2(22, 22), Vector2(-22, 22)])
+	pg.color = Color("c68642")
+	c.add_child(pg)
+	var d1 := Line2D.new()
+	d1.points = PackedVector2Array([Vector2(-20, -20), Vector2(20, 20)])
+	d1.width = 5.0
+	d1.default_color = Color("8d5524")
+	c.add_child(d1)
+	var d2 := Line2D.new()
+	d2.points = PackedVector2Array([Vector2(20, -20), Vector2(-20, 20)])
+	d2.width = 5.0
+	d2.default_color = Color("8d5524")
+	c.add_child(d2)
+	var fr := Line2D.new()
+	fr.points = PackedVector2Array([Vector2(-22, -22), Vector2(22, -22), Vector2(22, 22), Vector2(-22, 22), Vector2(-22, -22)])
+	fr.width = 5.0
+	fr.default_color = Color("8d5524")
+	c.add_child(fr)
+	parent.add_child(c)
+
+func add_banner(parent: Node, x: float, y: float, text: String, col: Color, pennant: bool) -> void:
+	var h := Node2D.new()
+	h.position = Vector2(x, y + 6.0)
+	parent.add_child(h)
+	var l: Label
+	if pennant:
+		dpoly(h, [-3, -150, 3, -150, 3, 10, -3, 10], Color("dee2e6"))
+		dpoly(h, [3, -150, 70, -128, 3, -106], col)
+		l = UI.label(text, 26, Color.WHITE)
+		l.position = Vector2(8, -190)
+	else:
+		dpoly(h, [-130, -170, -122, -170, -122, 10, -130, 10], Color("dee2e6"))
+		dpoly(h, [122, -170, 130, -170, 130, 10, 122, 10], Color("dee2e6"))
+		dpoly(h, [-130, -170, 130, -170, 130, -128, -130, -128], col)
+		l = UI.label(text, 24, Color.WHITE)
+		l.position = Vector2(-112, -168)
+	h.add_child(l)
 
 func update_chunks() -> void:
 	var cx: float = car.chassis.position.x
@@ -428,6 +687,11 @@ func build_hud() -> void:
 	info.add_child(dist_label)
 	info.add_child(coins_label)
 	info.add_child(goal_label)
+	for key in ["nitro", "magnet", "x2"]:
+		var pl := UI.label("", 26, Color.WHITE)
+		pl.visible = false
+		info.add_child(pl)
+		pw_labels[key] = pl
 	hud.add_child(info)
 	info.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT, Control.PRESET_MODE_MINSIZE, 24)
 
@@ -460,18 +724,41 @@ func build_hud() -> void:
 	brake_btn.button_down.connect(func(): brake_pressed = true)
 	brake_btn.button_up.connect(func(): brake_pressed = false)
 	hud.add_child(brake_btn)
-	brake_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 30)
+	brake_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT if Game.swap_pedals else Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 30)
 	var gas_btn := UI.pedal("GAS", UI.GREEN, 48, Vector2(280, 170))
 	gas_btn.modulate = Color(1, 1, 1, 0.85)
 	gas_btn.button_down.connect(func(): gas_pressed = true)
 	gas_btn.button_up.connect(func(): gas_pressed = false)
 	hud.add_child(gas_btn)
-	gas_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 30)
+	gas_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT if Game.swap_pedals else Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 30)
 
 	debug_label = UI.label("", 22, Color(1, 1, 1, 0.8))
 	debug_label.visible = Game.debug_on
 	hud.add_child(debug_label)
-	debug_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 12)
+	debug_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 12)
+	if ghost_active:
+		debug_label.offset_top += 76.0
+		debug_label.offset_bottom += 76.0
+
+	speedo = SpeedoScript.new()
+	hud.add_child(speedo)
+	speedo.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 8)
+
+	if ghost_active:
+		race_bar = RaceBarScript.new()
+		hud.add_child(race_bar)
+		race_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 12)
+		arrow_r = make_arrow(false)
+		arrow_l = make_arrow(true)
+
+	if ability == "nitro" or ability == "hop":
+		var acol: Color = Color("1c7ed6") if ability == "nitro" else Color("9c36b5")
+		ability_btn = UI.pedal(ability.to_upper(), acol, 38, Vector2(200, 110))
+		ability_btn.button_down.connect(use_special)
+		hud.add_child(ability_btn)
+		ability_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT if Game.swap_pedals else Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 30)
+		ability_btn.offset_top -= 195.0
+		ability_btn.offset_bottom -= 195.0
 
 	count_label = UI.label("3", 150, Color.WHITE)
 	count_label.visible = false
@@ -501,8 +788,10 @@ func build_tutorial() -> void:
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
 	var lines := [
-		"Hold GAS (right) to drive forward.",
-		"BRAKE (left) slows down and reverses.",
+		"Hold GAS (%s) to drive forward." % ("left" if Game.swap_pedals else "right"),
+		"BRAKE (%s) slows down and reverses." % ("right" if Game.swap_pedals else "left"),
+		"In the air: GAS tilts back, BRAKE tilts forward.",
+		"Land on your wheels - or it is game over!",
 		"Collect coins and red fuel cans.",
 		"Flips and long jumps give bonus coins.",
 		"Do not hit your head on the ground!",
@@ -573,7 +862,7 @@ func build_pause() -> void:
 	tt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pause_tune.add_child(tt)
 	tune_box = VBoxContainer.new()
-	tune_box.add_theme_constant_override("separation", 10)
+	tune_box.add_theme_constant_override("separation", 4)
 	pause_tune.add_child(tune_box)
 	fill_tune()
 	var trow := HBoxContainer.new()
@@ -604,6 +893,8 @@ func fill_tune() -> void:
 	tune_row("grip", "Grip")
 	tune_row("susp", "Suspension")
 	tune_row("grav", "Gravity")
+	tune_row("air", "Air Control")
+	tune_row("stab", "Stability")
 
 func tune_row(key: String, title: String) -> void:
 	var h := HBoxContainer.new()
@@ -616,7 +907,7 @@ func tune_row(key: String, title: String) -> void:
 	s.max_value = 1.8
 	s.step = 0.05
 	s.value = float(Game.tune[key])
-	s.custom_minimum_size = Vector2(380, 50)
+	s.custom_minimum_size = Vector2(380, 40)
 	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	h.add_child(s)
 	var vl := UI.label("%.2f" % s.value, 30, UI.GOLD)
@@ -699,12 +990,20 @@ func run_countdown(delta: float) -> void:
 		Sfx.play("go")
 		pop(count_label)
 		get_tree().create_timer(0.7).timeout.connect(hide_count)
+		if ghost_mode and not ghost_active:
+			popup("No ghost yet - set your first record!", UI.GOLD)
 
 # ---------------- flips / air time ----------------
 func _physics_process(delta: float) -> void:
 	if car == null or game_over:
 		return
 	if started:
+		rec_acc += delta
+		if rec_acc >= 0.1:
+			rec_acc -= 0.1
+			rec.append(snappedf(car.chassis.position.x, 0.1))
+			rec.append(snappedf(car.chassis.position.y, 0.1))
+			rec.append(snappedf(car.chassis.rotation, 0.01))
 		# মাথা মাটি ছুঁলে (গাড়ি উল্টালে) রান শেষ
 		var hp: Vector2 = car.chassis.to_global(car.head_local)
 		if hp.y + 8.0 >= terrain_y(hp.x):
@@ -735,8 +1034,13 @@ func on_land() -> void:
 	if air_time < 0.4:
 		return
 	Sfx.play("land")
+	Game.vibrate(40)
 	shake = maxf(shake, 5.0)
 	var n: int = int(absf(air_rot) / (TAU * 0.8))
+	var cxp: float = car.chassis.position.x
+	var slope: float = atan2(terrain_y(cxp + 30.0) - terrain_y(cxp - 30.0), 60.0)
+	var tilt: float = absf(angle_difference(car.chassis.rotation, slope))
+	var perfect: bool = tilt < 0.35 and air_time >= 0.8 and n == 0
 	if n > 0:
 		flips += n
 		var pts: int = FLIP_BONUS * n
@@ -746,10 +1050,15 @@ func on_land() -> void:
 			nm = "%s x%d" % [nm, n]
 		popup("%s +%d" % [nm, pts], UI.GOLD)
 		Sfx.play("flip")
-	elif air_time >= 1.0:
-		var pts2: int = int(air_time * AIR_BONUS)
+	elif air_time >= 1.0 or perfect:
+		var pts2: int = 0
+		if air_time >= 1.0:
+			pts2 = int(air_time * AIR_BONUS)
+		if perfect:
+			pts2 += PERFECT_BONUS
 		bonus_pts += pts2
-		popup("AIR TIME %.1fs +%d" % [air_time, pts2], Color("74c0fc"))
+		var head_txt: String = "PERFECT! " if perfect else ""
+		popup(head_txt + "AIR %.1fs +%d" % [air_time, pts2], Color("69db7c") if perfect else Color("74c0fc"))
 
 # ---------------- game loop ----------------
 func _process(delta: float) -> void:
@@ -806,6 +1115,13 @@ func _process(delta: float) -> void:
 	car.gas = want_gas and fuel > 0.0
 	car.brake = (brake_pressed or kb_brake) and started and not game_over
 	Sfx.set_engine(clampf(spd / 1400.0, 0.0, 1.0), car.gas)
+	update_powers(delta)
+	check_milestones()
+	update_ghost(delta)
+	update_weather(delta)
+	update_surface()
+	speedo.speed = spd / 50.0 * 3.6
+	speedo.queue_redraw()
 
 	var d: float = maxf(0.0, (cpos.x - START_X) / 50.0)
 	max_dist = maxf(max_dist, d)
@@ -830,10 +1146,12 @@ func end_game(reason: String, crash: bool) -> void:
 	low_overlay.color = Color(1, 0.1, 0.1, 0.0)
 	if crash:
 		Sfx.play("crash")
+		Game.vibrate(300)
 		shake = 22.0
 		Engine.time_scale = 0.3
 		get_tree().create_timer(0.6, true, false, true).timeout.connect(restore_time)
 	air_best = maxf(air_best, air_time)
+	save_ghost()
 	var res: Dictionary = Game.submit_run(map_idx, max_dist, run_coins, flips, air_best, bonus_pts)
 	get_tree().create_timer(1.2, true, false, true).timeout.connect(show_result.bind(reason, res))
 
@@ -845,9 +1163,16 @@ func show_result(reason: String, res: Dictionary) -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	p.add_child(v)
-	var t := UI.label(reason, 56, UI.GOLD)
+	var title_txt: String = reason
+	if ghost_active:
+		title_txt = "YOU BEAT THE GHOST!" if ghost_win else "GHOST WINS"
+	var t := UI.label(title_txt, 50 if ghost_active else 56, UI.GREEN if ghost_win else UI.GOLD)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
+	if ghost_active:
+		var rl := UI.label(reason, 28, Color(1, 1, 1, 0.8))
+		rl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		v.add_child(rl)
 	var dl := UI.label("Distance: %d m" % int(max_dist), 40, Color.WHITE)
 	dl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(dl)
@@ -875,8 +1200,11 @@ func show_result(reason: String, res: Dictionary) -> void:
 	var lines: Array = []
 	lines.append(["Coins collected: %d  (+%d)" % [run_coins, int(res["pickup_coins"])], Color.WHITE])
 	lines.append(["Distance bonus: +%d" % int(res["dist_coins"]), Color.WHITE])
-	if int(res["bonus_pts"]) > 0:
-		lines.append(["Stunts (%d flips): +%d" % [int(res["flips"]), int(res["bonus_pts"])], Color("74c0fc")])
+	var stunt_pts: int = int(res["bonus_pts"]) - (ghost_bonus if ghost_win else 0)
+	if stunt_pts > 0:
+		lines.append(["Stunts (%d flips): +%d" % [int(res["flips"]), stunt_pts], Color("74c0fc")])
+	if ghost_win:
+		lines.append(["Ghost victory: +%d" % ghost_bonus, UI.GREEN])
 	if int(res["bonus"]) > 0:
 		lines.append(["Star bonus: +%d" % int(res["bonus"]), UI.GOLD])
 	for ln in lines:
@@ -914,3 +1242,279 @@ func show_result(reason: String, res: Dictionary) -> void:
 	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
 	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	p.grow_vertical = Control.GROW_DIRECTION_BOTH
+
+# ---------------- powerups / abilities / milestones ----------------
+func update_powers(delta: float) -> void:
+	if started and not game_over:
+		nitro_t = maxf(0.0, nitro_t - delta)
+		magnet_t = maxf(0.0, magnet_t - delta)
+		x2_t = maxf(0.0, x2_t - delta)
+		special_t = maxf(0.0, special_t - delta)
+		special_cd = maxf(0.0, special_cd - delta)
+	car.boost = (nitro_t > 0.0 or special_t > 0.0) and not game_over
+
+	var cp: Vector2 = car.chassis.global_position
+	var keep: Array = []
+	for it in coin_items:
+		if is_instance_valid(it) and not it.is_queued_for_deletion():
+			keep.append(it)
+			if magnet_t > 0.0 and not game_over:
+				var dd: float = it.global_position.distance_to(cp)
+				if dd < 450.0:
+					it.global_position = it.global_position.move_toward(cp, 1100.0 * delta)
+	coin_items = keep
+
+	set_pw("nitro", "NITRO", maxf(nitro_t, special_t), Color("4dabf7"))
+	set_pw("magnet", "MAGNET", magnet_t, Color("b197fc"))
+	set_pw("x2", "x2 COINS", x2_t, Color("ffd43b"))
+
+	if ability_btn != null:
+		if special_cd > 0.0:
+			ability_btn.text = "%d" % int(ceil(special_cd))
+			ability_btn.disabled = true
+		else:
+			ability_btn.text = ability.to_upper()
+			ability_btn.disabled = false
+
+func set_pw(key: String, title: String, t: float, col: Color) -> void:
+	var l: Label = pw_labels[key]
+	if t > 0.0:
+		l.visible = true
+		l.text = "%s  %.1fs" % [title, t]
+		l.add_theme_color_override("font_color", col)
+	else:
+		l.visible = false
+
+func use_special() -> void:
+	if not started or game_over or paused or special_cd > 0.0:
+		return
+	if ability == "nitro":
+		special_t = 3.0
+		special_cd = 12.0
+		Sfx.play("flip")
+		Game.vibrate(40)
+		popup("NITRO!", Color("4dabf7"))
+	elif ability == "hop":
+		if car.on_ground:
+			car.hop()
+			special_cd = 6.0
+			Sfx.play("flip")
+			Game.vibrate(30)
+
+func check_milestones() -> void:
+	if game_over:
+		return
+	if max_dist >= float(next_cp) * CP_DIST:
+		var pts: int = 100 * next_cp
+		bonus_pts += pts
+		fuel = minf(fuel_max, fuel + fuel_max * 0.2)
+		popup("CHECKPOINT %d m  +%d" % [int(float(next_cp) * CP_DIST), pts], Color("ff8787"))
+		Sfx.play("ach")
+		Game.vibrate(60)
+		next_cp += 1
+	if not record_shown and best_start >= 20.0 and max_dist > best_start:
+		record_shown = true
+		popup("NEW RECORD!", Color("fab005"))
+		Sfx.play("star")
+		Game.vibrate(80)
+
+# ---------------- surface patches (ice / mud) ----------------
+func patch_type_for_chunk(idx: int) -> int:
+	if idx < 8 or idx % 9 != 7 or idx % 14 == 5 or idx % 14 == 6:
+		return 0
+	var t: int = 1 if int(idx / 9) % 2 == 0 else 2
+	if map_idx == 2 and t == 1:
+		t = 2
+	if map_idx == 5 and t == 2:
+		t = 1
+	return t
+
+func patch_at(x: float) -> int:
+	var idx: int = int(floor(x / CHUNK_W))
+	var t: int = patch_type_for_chunk(idx)
+	if t == 0:
+		return 0
+	var x0: float = float(idx) * CHUNK_W
+	if x >= x0 + 50.0 and x <= x0 + 350.0:
+		return t
+	return 0
+
+func update_surface() -> void:
+	var pat: int = patch_at(car.chassis.position.x)
+	if pat != last_patch:
+		last_patch = pat
+		if pat == 1:
+			popup("ICE! SLIPPERY", Color("a5d8ff"))
+		elif pat == 2:
+			popup("MUD! SLOW", Color("c68642"))
+	var fm := 1.0
+	var drag := 0.0
+	if pat == 1:
+		fm = 0.3
+	elif pat == 2:
+		fm = 0.8
+		drag = 0.9
+	fm *= 1.0 - 0.25 * rain_level
+	car.set_surface(fm, drag)
+
+# ---------------- weather (rain / fog) ----------------
+func build_weather() -> void:
+	if not weather_ok:
+		return
+	var sz: Vector2 = get_viewport_rect().size
+	var l := CanvasLayer.new()
+	l.layer = 2
+	add_child(l)
+	dark_rect = ColorRect.new()
+	dark_rect.color = Color(0.05, 0.08, 0.15, 0.0)
+	dark_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.add_child(dark_rect)
+	dark_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var fc := Color(0.85, 0.88, 0.92, 0.0)
+	var g := Gradient.new()
+	g.set_color(0, fc)
+	g.set_color(1, Color(0.85, 0.88, 0.92, 0.92))
+	g.add_point(0.3, fc)
+	var gt := GradientTexture2D.new()
+	gt.gradient = g
+	gt.fill_from = Vector2(0, 0)
+	gt.fill_to = Vector2(1, 0)
+	gt.width = 128
+	gt.height = 8
+	fog_rect = TextureRect.new()
+	fog_rect.texture = gt
+	fog_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	fog_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	fog_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fog_rect.modulate.a = 0.0
+	l.add_child(fog_rect)
+	fog_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	rain_fx = CPUParticles2D.new()
+	rain_fx.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	rain_fx.emission_rect_extents = Vector2(sz.x * 0.7, 4)
+	rain_fx.position = Vector2(sz.x * 0.5, -20.0)
+	rain_fx.local_coords = true
+	rain_fx.amount = 200
+	rain_fx.lifetime = 1.0
+	rain_fx.direction = Vector2(-0.2, 1)
+	rain_fx.spread = 3.0
+	rain_fx.gravity = Vector2.ZERO
+	rain_fx.initial_velocity_min = 900.0
+	rain_fx.initial_velocity_max = 1100.0
+	rain_fx.scale_amount_min = 1.0
+	rain_fx.scale_amount_max = 1.4
+	var rg := Gradient.new()
+	rg.set_color(0, Color(0.8, 0.9, 1.0, 0.0))
+	rg.set_color(1, Color(0.8, 0.9, 1.0, 0.9))
+	var rt := GradientTexture2D.new()
+	rt.gradient = rg
+	rt.fill_from = Vector2(0, 0)
+	rt.fill_to = Vector2(0, 1)
+	rt.width = 3
+	rt.height = 26
+	rain_fx.texture = rt
+	rain_fx.emitting = false
+	l.add_child(rain_fx)
+
+func update_weather(delta: float) -> void:
+	if not weather_ok or rain_fx == null:
+		return
+	var blk: int = int(max_dist / 300.0)
+	if blk != weather_block:
+		weather_block = blk
+		var rng := RandomNumberGenerator.new()
+		rng.seed = map_idx * 1000 + blk * 7 + 3
+		var r: float = rng.randf()
+		var prev: int = weather_target
+		weather_target = 0
+		if blk >= 1:
+			if r < 0.25:
+				weather_target = 1
+			elif r < 0.45:
+				weather_target = 2
+		if weather_target != prev and started:
+			if weather_target == 1:
+				popup("RAIN - less grip!", Color("74c0fc"))
+			elif weather_target == 2:
+				popup("FOG AHEAD!", Color("ced4da"))
+			else:
+				popup("Sky is clearing", Color("69db7c"))
+	rain_level = move_toward(rain_level, 1.0 if weather_target == 1 else 0.0, delta * 0.4)
+	fog_level = move_toward(fog_level, 1.0 if weather_target == 2 else 0.0, delta * 0.4)
+	rain_fx.emitting = rain_level > 0.05
+	rain_fx.modulate.a = rain_level
+	fog_rect.modulate.a = fog_level
+	dark_rect.color.a = 0.18 * rain_level
+
+# ---------------- ghost ----------------
+func make_arrow(left: bool) -> Polygon2D:
+	var p := Polygon2D.new()
+	p.polygon = PackedVector2Array([Vector2(-18, -22), Vector2(18, 0), Vector2(-18, 22)])
+	p.color = Color(1, 0.35, 0.35, 0.9)
+	if left:
+		p.scale = Vector2(-1, 1)
+	p.visible = false
+	hud.add_child(p)
+	return p
+
+func save_ghost() -> void:
+	if rec.size() >= 30 and max_dist > ghost_dist_rec and max_dist > 20.0:
+		Game.ghost_save(map_idx, car_idx, rec, max_dist)
+
+func update_ghost(delta: float) -> void:
+	if not ghost_active or ghost_node == null:
+		return
+	if started and not game_over:
+		ghost_t += delta * ghost_speed
+	var n: int = int(ghost_samples.size() / 3)
+	var f: float = ghost_t / 0.1
+	var i0: int = int(f)
+	var frac: float = f - float(i0)
+	if i0 >= n - 1:
+		i0 = n - 1
+		frac = 0.0
+		ghost_done = true
+	var i1: int = mini(i0 + 1, n - 1)
+	var gx: float = lerpf(ghost_samples[i0 * 3], ghost_samples[i1 * 3], frac)
+	var gy: float = lerpf(ghost_samples[i0 * 3 + 1], ghost_samples[i1 * 3 + 1], frac)
+	var gr: float = lerp_angle(ghost_samples[i0 * 3 + 2], ghost_samples[i1 * 3 + 2], frac)
+	ghost_node.position = Vector2(gx, gy)
+	ghost_node.rotation = gr
+	for w in ghost_wheels:
+		w.rotation = gx / ghost_wr
+
+	var cur_d: float = maxf(0.0, (car.chassis.position.x - START_X) / 50.0)
+	var ghost_d: float = maxf(0.0, (gx - START_X) / 50.0)
+	var gap: float = cur_d - ghost_d
+	race_bar.gap = gap
+	if ghost_done:
+		if ghost_win:
+			race_bar.text = "GHOST BEATEN!"
+			race_bar.col = Color("69db7c")
+		else:
+			race_bar.text = "BEAT IT: %d m TO GO" % int(maxf(0.0, ghost_target - max_dist))
+			race_bar.col = Color("ffd43b")
+	elif gap >= 0.0:
+		race_bar.text = "YOU %d m AHEAD" % int(gap)
+		race_bar.col = Color("69db7c")
+	else:
+		race_bar.text = "GHOST %d m AHEAD" % int(-gap)
+		race_bar.col = Color("ff6b6b")
+	race_bar.queue_redraw()
+
+	if not ghost_win and max_dist >= ghost_target and not game_over:
+		ghost_win = true
+		bonus_pts += ghost_bonus
+		popup("GHOST BEATEN! +%d" % ghost_bonus, Color("69db7c"))
+		Sfx.play("ach")
+		Game.vibrate(100)
+
+	var vt: Transform2D = get_viewport().get_canvas_transform()
+	var gp: Vector2 = vt * ghost_node.global_position
+	var sz: Vector2 = get_viewport_rect().size
+	arrow_r.visible = gp.x > sz.x - 10.0
+	arrow_l.visible = gp.x < 10.0
+	arrow_r.position = Vector2(sz.x - 36.0, sz.y * 0.4)
+	arrow_l.position = Vector2(36.0, sz.y * 0.4)
