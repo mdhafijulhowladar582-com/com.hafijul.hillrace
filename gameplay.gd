@@ -36,6 +36,8 @@ var fuel_chunks := {}
 var coin_items: Array = []
 var last_pad := -10.0
 var ghost_mode := false
+var survival := false
+var surv_next_m := 250.0
 var ghost_active := false
 var ghost_samples := PackedFloat32Array()
 var ghost_dist_rec := 0.0
@@ -135,7 +137,7 @@ func build_fuel_chunks() -> void:
 	var k := 0
 	while c < 600:
 		fuel_chunks[c] = true
-		c += FUEL_GAP0 + FUEL_GAP_STEP * k
+		c += FUEL_GAP0 if survival else FUEL_GAP0 + FUEL_GAP_STEP * k
 		k += 1
 
 # গেম থেকে বের হলেও এ পর্যন্ত আয় করা কয়েন জমা হবে
@@ -160,6 +162,7 @@ func _ready() -> void:
 	tutorial_active = not Game.tutorial_done
 	best_start = float(Game.best[map_idx])
 	ghost_mode = Game.mode == "ghost"
+	survival = Game.mode == "survival"
 	var gd: Dictionary = Game.ghost_load(map_idx, car_idx)
 	ghost_dist_rec = float(gd.get("dist", 0.0))
 	if ghost_mode and not gd.is_empty():
@@ -263,6 +266,9 @@ func terrain_y(x: float) -> float:
 	y += sin(x * 0.047 + 2.0) * rough * 0.6 * t
 	y -= ramp_off(x)
 	return y
+
+func slope_at(x: float) -> float:
+	return absf(terrain_y(x + 60.0) - terrain_y(x - 60.0)) / 120.0
 
 # র‍্যাম্প: কিছু চাংকে লাফের ঢাল (ধীরে উঠে হঠাৎ নামে)
 func ramp_off(x: float) -> float:
@@ -381,8 +387,11 @@ func build_chunk(idx: int) -> void:
 	pm.bounce = 0.0
 	body.physics_material_override = pm
 	node.add_child(body)
+	var bridge_chunk: bool = is_bridge(idx)
 	var segs := PackedVector2Array()
 	for i in range(n):
+		if bridge_chunk and top[i].x >= x0 + GAP_A - 0.1 and top[i + 1].x <= x0 + GAP_B + 0.1:
+			continue
 		segs.append(top[i])
 		segs.append(top[i + 1])
 	var shape := ConcavePolygonShape2D.new()
@@ -456,19 +465,20 @@ func build_chunk(idx: int) -> void:
 			add_banner(node, xb, terrain_y(xb), "BEST %d m" % int(best_start), Color("fab005"), true)
 
 	# পাথর (বাধা) ও কাঠের বাক্স
-	if idx >= 5 and idx % 14 != 6 and idx % 14 != 5:
+	if idx >= 5 and idx % 14 != 6 and idx % 14 != 5 and not bridge_chunk:
 		if idx % 5 == 2:
 			var rx: float = x0 + rng.randf_range(150.0, 300.0)
-			add_rock(node, rx, terrain_y(rx), rng)
+			if slope_at(rx) < 0.22:
+				add_rock(node, rx, terrain_y(rx), rng)
 		if idx % 7 == 3:
 			var bx: float = x0 + rng.randf_range(150.0, 300.0)
 			var bg0: float = terrain_y(bx)
-			add_crate(node, bx - 24.0, bg0 - 26.0)
-			add_crate(node, bx + 24.0, bg0 - 26.0)
-			add_crate(node, bx, bg0 - 72.0)
+			if slope_at(bx) < 0.22:
+				add_crate(node, bx - 24.0, bg0 - 26.0)
+				add_crate(node, bx + 24.0, bg0 - 26.0)
 
 	# বুস্ট প্যাড (র‍্যাম্পের ঠিক আগে এবং মাঝে মাঝে)
-	if idx >= 3 and (idx % 14 == 5 or (idx % 9 == 4 and idx % 14 != 6)):
+	if idx >= 3 and not bridge_chunk and (idx % 14 == 5 or (idx % 9 == 4 and idx % 14 != 6)):
 		var padx: float = x0 + 250.0
 		if idx % 14 != 5:
 			padx = x0 + rng.randf_range(100.0, 300.0)
@@ -488,6 +498,186 @@ func build_chunk(idx: int) -> void:
 		if fuel_chunks.has(idx):
 			var fx: float = x0 + CHUNK_W * 0.5
 			spawn_item(node, fx, terrain_y(fx) - 70.0, "fuel")
+	if bridge_chunk:
+		build_bridge(node, x0, idx)
+
+# ---------------- ভাঙা ব্রিজ ----------------
+const GAP_A := 160.0
+const GAP_B := 280.0
+
+func is_bridge(idx: int) -> bool:
+	var m: int = 5 if survival else 11
+	var r: int = 2 if survival else 7
+	if idx < 8 or idx % m != r or idx % 14 == 5 or idx % 14 == 6:
+		return false
+	if patch_type_for_chunk(idx) != 0:
+		return false
+	return slope_at(float(idx) * CHUNK_W + 220.0) < 0.2
+
+func build_bridge(node: Node2D, x0: float, idx: int) -> void:
+	var xa: float = x0 + GAP_A
+	var xb: float = x0 + GAP_B
+	var ya: float = terrain_y(xa)
+	var yb: float = terrain_y(xb)
+	var pit := Polygon2D.new()
+	pit.polygon = PackedVector2Array([Vector2(xa, ya - 6.0), Vector2(xb, yb - 6.0), Vector2(xb, 1600.0), Vector2(xa, 1600.0)])
+	pit.color = Color(0.05, 0.04, 0.07)
+	node.add_child(pit)
+	var missing: Array = [2] if idx % 2 == 1 else [2, 3]
+	var ang: float = atan2(yb - ya, xb - xa)
+	for k in range(6):
+		if k in missing:
+			continue
+		var px: float = xa + 10.0 + 20.0 * float(k)
+		var py: float = lerpf(ya, yb, (px - xa) / (xb - xa))
+		var pl := RigidBody2D.new()
+		pl.collision_layer = 1
+		pl.collision_mask = 0
+		pl.freeze = true
+		pl.freeze_mode = RigidBody2D.FREEZE_MODE_STATIC
+		pl.mass = 1.0
+		pl.position = Vector2(px, py + 2.0)
+		pl.rotation = ang
+		pl.add_to_group("plank")
+		var ppm := PhysicsMaterial.new()
+		ppm.friction = 2.0
+		pl.physics_material_override = ppm
+		var cs := CollisionShape2D.new()
+		var sh := RectangleShape2D.new()
+		sh.size = Vector2(20.0, 12.0)
+		cs.shape = sh
+		pl.add_child(cs)
+		var pg := Polygon2D.new()
+		pg.polygon = PackedVector2Array([Vector2(-9, -6), Vector2(9, -6), Vector2(9, 6), Vector2(-9, 6)])
+		pg.color = Color("a0682c")
+		pl.add_child(pg)
+		var ln := Line2D.new()
+		ln.points = PackedVector2Array([Vector2(-9, -6), Vector2(9, -6), Vector2(9, 6), Vector2(-9, 6), Vector2(-9, -6)])
+		ln.width = 2.0
+		ln.default_color = Color("5c3a14")
+		pl.add_child(ln)
+		node.add_child(pl)
+
+func collapse_plank(pl: RigidBody2D) -> void:
+	pl.remove_from_group("plank")
+	pl.collision_layer = 0
+	pl.freeze = false
+	pl.angular_velocity = randf_range(-4.0, 4.0)
+	burst(pl.global_position, Color("a0682c"))
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(pl):
+			pl.queue_free())
+
+# ---------------- পড়ন্ত পাথর + ব্রিজ আপডেট ----------------
+var next_rockfall_m := 120.0
+var bridge_warned := {}
+
+func update_hazards(delta: float) -> void:
+	if car == null or game_over or not started or paused:
+		return
+	var cpos: Vector2 = car.chassis.global_position
+	# গর্তে পড়লে রান শেষ
+	if cpos.y > terrain_y(cpos.x) + 300.0:
+		end_game("FELL IN GAP", true)
+		return
+	# ব্রিজের তক্তা: চাকা ছুঁলে কাঁপে, একটু পরে ভেঙে পড়ে
+	for pl in get_tree().get_nodes_in_group("plank"):
+		if not is_instance_valid(pl) or not pl.freeze:
+			continue
+		var touching := false
+		for w in car.wheels:
+			var dx: float = absf(w.global_position.x - pl.global_position.x)
+			var dy: float = pl.global_position.y - w.global_position.y
+			if dx < 34.0 and dy > 0.0 and dy < car.wr + 24.0:
+				touching = true
+		var ct: float = float(pl.get_meta("ct", 0.0))
+		if touching:
+			ct += delta
+		pl.set_meta("ct", ct)
+		if ct > (maxf(0.22, 0.35 - max_dist * 0.0002) if survival else 0.35):
+			collapse_plank(pl)
+	# ব্রিজ আসছে সতর্কতা
+	var ci: int = int(floor((cpos.x + 650.0) / CHUNK_W))
+	if is_bridge(ci) and not bridge_warned.has(ci):
+		bridge_warned[ci] = true
+		popup("BROKEN BRIDGE!", Color("ff922b"))
+		Sfx.play("low")
+	# সারভাইভাল: প্রতি ২৫০ মি. টিকে থাকলে বোনাস
+	if survival and max_dist >= surv_next_m:
+		surv_next_m += 250.0
+		run_coins += 25
+		popup("SURVIVED! +25", UI.GREEN)
+	# পড়ন্ত পাথর
+	if max_dist >= next_rockfall_m:
+		if survival:
+			next_rockfall_m = max_dist + maxf(45.0, 150.0 - max_dist * 0.04) * randf_range(0.8, 1.2)
+		else:
+			next_rockfall_m = max_dist + randf_range(140.0, 260.0)
+		start_rockfall()
+
+func start_rockfall() -> void:
+	var vx: float = clampf(car.chassis.linear_velocity.x, 250.0, 1100.0)
+	var n: int = 1
+	var warn: float = 0.9
+	if survival:
+		n = mini(3, 1 + int(max_dist / 500.0))
+		warn = maxf(0.6, 0.9 - max_dist * 0.0002)
+	popup("ROCKFALL!", Color("ff922b"))
+	Sfx.play("low")
+	for j in range(n):
+		var tx: float = car.chassis.global_position.x + vx * 2.3 + float(j) * 220.0
+		var ci: int = int(floor(tx / CHUNK_W))
+		if is_bridge(ci) or not chunks.has(ci):
+			continue
+		var ty: float = terrain_y(tx)
+		var mark := Polygon2D.new()
+		mark.polygon = PackedVector2Array([Vector2(-18, -90), Vector2(18, -90), Vector2(0, -50)])
+		mark.color = Color(1.0, 0.2, 0.2, 0.95)
+		mark.position = Vector2(tx, ty)
+		add_child(mark)
+		var tw := mark.create_tween()
+		tw.set_loops(4)
+		tw.tween_property(mark, "modulate:a", 0.2, warn / 8.0)
+		tw.tween_property(mark, "modulate:a", 1.0, warn / 8.0)
+		get_tree().create_timer(warn).timeout.connect(func():
+			if is_instance_valid(mark):
+				mark.queue_free()
+			if not game_over:
+				drop_rock(tx, ty))
+
+func drop_rock(tx: float, ty: float) -> void:
+	var r := RigidBody2D.new()
+	r.collision_layer = 16
+	r.collision_mask = 1
+	r.mass = 1.5
+	r.position = Vector2(tx, ty - 700.0)
+	r.add_to_group("rock")
+	var rpm := PhysicsMaterial.new()
+	rpm.friction = 1.0
+	rpm.bounce = 0.15
+	r.physics_material_override = rpm
+	var cs := CollisionShape2D.new()
+	var sh := CircleShape2D.new()
+	sh.radius = 24.0
+	cs.shape = sh
+	r.add_child(cs)
+	var pts := PackedVector2Array()
+	for i in range(10):
+		var a: float = TAU * float(i) / 10.0
+		var rr: float = 24.0 if i % 2 == 0 else 20.0
+		pts.append(Vector2(cos(a), sin(a)) * rr)
+	var pg := Polygon2D.new()
+	pg.polygon = pts
+	pg.color = Color("868e96")
+	r.add_child(pg)
+	var hl := Polygon2D.new()
+	hl.polygon = PackedVector2Array([Vector2(-10, -12), Vector2(4, -17), Vector2(12, -6), Vector2(-2, -4)])
+	hl.color = Color("adb5bd")
+	r.add_child(hl)
+	add_child(r)
+	get_tree().create_timer(12.0).timeout.connect(func():
+		if is_instance_valid(r):
+			r.queue_free())
 
 func spawn_item(parent: Node, x: float, y: float, kind: String) -> void:
 	var item = ItemScript.new()
@@ -587,7 +777,7 @@ func add_rock(parent: Node, x: float, y: float, rng: RandomNumberGenerator) -> v
 	b.position = Vector2(x, y + 4.0)
 	b.add_to_group("rock")
 	var sc: float = rng.randf_range(0.8, 1.1)
-	var pts := PackedVector2Array([Vector2(-34, 0), Vector2(-26, -24), Vector2(0, -32), Vector2(24, -26), Vector2(36, 0)])
+	var pts := PackedVector2Array([Vector2(-46, 0), Vector2(-36, -8), Vector2(-16, -16), Vector2(10, -18), Vector2(32, -10), Vector2(48, 0)])
 	for i in range(pts.size()):
 		pts[i] = pts[i] * sc
 	var cs := CollisionShape2D.new()
@@ -600,7 +790,7 @@ func add_rock(parent: Node, x: float, y: float, rng: RandomNumberGenerator) -> v
 	pg.color = Color("868e96")
 	b.add_child(pg)
 	var hl := Polygon2D.new()
-	hl.polygon = PackedVector2Array([Vector2(-14, -20) * sc, Vector2(0, -30) * sc, Vector2(12, -22) * sc, Vector2(-2, -12) * sc])
+	hl.polygon = PackedVector2Array([Vector2(-14, -12) * sc, Vector2(0, -17) * sc, Vector2(12, -13) * sc, Vector2(-2, -7) * sc])
 	hl.color = Color("adb5bd")
 	b.add_child(hl)
 	parent.add_child(b)
@@ -610,6 +800,7 @@ func add_crate(parent: Node, x: float, y: float) -> void:
 	c.collision_layer = 32
 	c.collision_mask = 1 | 2 | 4 | 32
 	c.mass = 0.5
+	c.add_to_group("crate")
 	c.position = Vector2(x, y)
 	var cs := CollisionShape2D.new()
 	var sh := RectangleShape2D.new()
@@ -946,6 +1137,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		on_back()
 
 func next_goal() -> String:
+	if survival:
+		return "SURVIVAL: no finish line"
 	for k in range(3):
 		if max_dist < float(targets[k]):
 			return "Goal %d/3: %d m" % [k + 1, int(targets[k])]
@@ -1116,6 +1309,7 @@ func _process(delta: float) -> void:
 	car.brake = (brake_pressed or kb_brake) and started and not game_over
 	Sfx.set_engine(clampf(spd / 1400.0, 0.0, 1.0), car.gas)
 	update_powers(delta)
+	update_hazards(delta)
 	check_milestones()
 	update_ghost(delta)
 	update_weather(delta)
@@ -1244,7 +1438,29 @@ func show_result(reason: String, res: Dictionary) -> void:
 	p.grow_vertical = Control.GROW_DIRECTION_BOTH
 
 # ---------------- powerups / abilities / milestones ----------------
+var stuck_t := 0.0
+
+# গ্যাস চেপেও গাড়ি আটকে থাকলে সামনের পাথর/বাক্স সরিয়ে দেয়
+func check_stuck(delta: float) -> void:
+	if not started or game_over or paused or not car.gas:
+		stuck_t = 0.0
+		return
+	if car.chassis.linear_velocity.length() < 25.0:
+		stuck_t += delta
+	else:
+		stuck_t = 0.0
+	if stuck_t < 1.2:
+		return
+	stuck_t = 0.0
+	var cp: Vector2 = car.chassis.global_position
+	for grp in ["rock", "crate"]:
+		for b in get_tree().get_nodes_in_group(grp):
+			if is_instance_valid(b) and b.global_position.distance_to(cp) < 220.0:
+				burst(b.global_position, Color("adb5bd"))
+				b.queue_free()
+
 func update_powers(delta: float) -> void:
+	check_stuck(delta)
 	if started and not game_over:
 		nitro_t = maxf(0.0, nitro_t - delta)
 		magnet_t = maxf(0.0, magnet_t - delta)

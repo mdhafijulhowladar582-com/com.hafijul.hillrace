@@ -42,6 +42,8 @@ func _ready() -> void:
 	var title_txt := "SELECT MAP"
 	if Game.mode == "ghost":
 		title_txt = "GHOST RACE - SELECT MAP"
+	if Game.mode == "survival":
+		title_txt = "SURVIVAL - SELECT MAP"
 	var title := UI.label(title_txt, 46, Color.WHITE)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

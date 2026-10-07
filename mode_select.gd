@@ -48,6 +48,7 @@ func _ready() -> void:
 	root.add_child(row)
 	row.add_child(adventure_panel())
 	row.add_child(ghost_panel())
+	row.add_child(survival_panel())
 
 func panel_base(title: String, desc: String, tcol: Color) -> VBoxContainer:
 	var p := UI.panel_box(UI.PANEL, 28)
@@ -62,7 +63,7 @@ func panel_base(title: String, desc: String, tcol: Color) -> VBoxContainer:
 	var d := UI.label(desc, 26, Color(0.9, 0.94, 1.0))
 	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	d.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	d.custom_minimum_size = Vector2(420, 0)
+	d.custom_minimum_size = Vector2(300, 0)
 	v.add_child(d)
 	set_meta("last_panel", p)
 	return v
@@ -107,6 +108,21 @@ func ghost_panel() -> Control:
 		main.go("maps"))
 	v.add_child(b)
 	refresh_levels()
+	return get_meta("last_panel")
+
+func survival_panel() -> Control:
+	var v := panel_base("SURVIVAL", "The hardest mode. No finish line - hazards get faster and denser the farther you go. Every hazard shows a warning, so there is always a way through.", UI.RED)
+	var info := UI.label("Rockfall warning marker  |  Bridges: go fast\nFuel cans stay regular  |  +25 coins every 250 m", 22, Color(1, 1, 1, 0.85))
+	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(info)
+	var sp := Control.new()
+	sp.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	v.add_child(sp)
+	var b := UI.button("PLAY SURVIVAL", UI.RED, 38, Vector2(0, 100))
+	b.pressed.connect(func():
+		Game.mode = "survival"
+		main.go("maps"))
+	v.add_child(b)
 	return get_meta("last_panel")
 
 func refresh_levels() -> void:
